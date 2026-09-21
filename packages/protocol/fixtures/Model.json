@@ -1,0 +1,10 @@
+{
+  "id": "model-1",
+  "createdAt": "2026-09-21T10:00:00Z",
+  "updatedAt": "2026-09-21T10:00:00Z",
+  "provider": "example",
+  "name": "local-model",
+  "capabilities": [
+    "text"
+  ]
+}

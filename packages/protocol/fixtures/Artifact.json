@@ -1,0 +1,8 @@
+{
+  "id": "artifact-1",
+  "createdAt": "2026-09-21T10:00:00Z",
+  "updatedAt": "2026-09-21T10:00:00Z",
+  "runId": "run-1",
+  "kind": "text",
+  "uri": "flowstate://artifacts/artifact-1"
+}

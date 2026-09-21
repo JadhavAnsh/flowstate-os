@@ -1,0 +1,10 @@
+:root {
+  font-family: system-ui, sans-serif;
+  color: #eff4ff;
+  background: #111827;
+}
+
+body { margin: 0; }
+.container { padding: 3rem; }
+h1 { margin-bottom: 0.5rem; }
+p { color: #b9c6db; }

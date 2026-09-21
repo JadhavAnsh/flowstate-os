@@ -1,0 +1,7 @@
+{
+  "id": "tool-1",
+  "createdAt": "2026-09-21T10:00:00Z",
+  "updatedAt": "2026-09-21T10:00:00Z",
+  "name": "files.read",
+  "riskClass": "READ"
+}

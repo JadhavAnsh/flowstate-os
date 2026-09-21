@@ -1,0 +1,11 @@
+[package]
+name = "flowstate-protocol"
+version.workspace = true
+edition.workspace = true
+description = "Rust types generated from the FlowState shared protocol"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+typify = "0.5"
+chrono = { version = "0.4", features = ["serde"] }

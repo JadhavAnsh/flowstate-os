@@ -1,0 +1,7 @@
+{
+  "id": "agent-1",
+  "createdAt": "2026-09-21T10:00:00Z",
+  "updatedAt": "2026-09-21T10:00:00Z",
+  "name": "Example agent",
+  "instructions": "Help with an approved task."
+}

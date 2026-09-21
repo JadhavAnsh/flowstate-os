@@ -1,0 +1,19 @@
+{
+  "name": "flowstate-os",
+  "private": true,
+  "version": "0.1.0",
+  "packageManager": "bun@1.3.14",
+  "workspaces": ["apps/*", "packages/*"],
+  "scripts": {
+    "dev:web": "bun --cwd apps/web dev",
+    "dev:api": "bun --cwd apps/api dev",
+    "dev:desktop": "bun --cwd apps/desktop tauri dev",
+    "build:web": "bun --cwd apps/web build",
+    "build:desktop": "bun --cwd apps/desktop build",
+    "generate:protocol": "bun --cwd packages/protocol generate",
+    "check:protocol": "bun --cwd packages/protocol check",
+    "test:protocol": "bun --cwd packages/protocol test",
+    "typecheck": "bun --cwd apps/web typecheck && bun --cwd apps/api typecheck && bun --cwd apps/desktop typecheck && bun --cwd packages/protocol typecheck",
+    "check": "bun run check:protocol && bun run test:protocol && bun run typecheck && cargo check --workspace && cargo test -p flowstate-protocol"
+  }
+}

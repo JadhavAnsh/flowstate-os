@@ -1,0 +1,10 @@
+{
+  "id": "event-1",
+  "schemaVersion": 1,
+  "type": "task.started",
+  "occurredAt": "2026-09-21T10:00:00Z",
+  "runId": "run-1",
+  "payload": {
+    "taskId": "task-1"
+  }
+}
