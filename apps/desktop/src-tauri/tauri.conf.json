@@ -10,11 +10,26 @@
     "frontendDist": "../dist"
   },
   "app": {
+    "macOSPrivateApi": true,
     "windows": [
       {
+        "label": "main",
         "title": "FlowState OS",
-        "width": 800,
-        "height": 600
+        "width": 960,
+        "height": 720
+      },
+      {
+        "label": "hud",
+        "title": "FlowState HUD",
+        "width": 560,
+        "height": 148,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "visible": false,
+        "skipTaskbar": true,
+        "center": true,
+        "resizable": false
       }
     ],
     "security": {
@@ -30,6 +45,9 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "macOS": {
+      "infoPlist": "Info.plist"
+    }
   }
 }

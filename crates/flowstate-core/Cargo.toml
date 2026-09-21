@@ -1,0 +1,21 @@
+[package]
+name = "flowstate-core"
+version.workspace = true
+edition.workspace = true
+description = "Local FlowState runtime (persistence, events, vault, models)"
+
+[dependencies]
+flowstate-protocol.workspace = true
+serde.workspace = true
+serde_json = "1"
+thiserror = "2"
+uuid = { version = "1", features = ["v4"] }
+chrono = { version = "0.4", features = ["serde"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+futures-util = "0.3"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync"] }
+tracing = "0.1"
+
+[dev-dependencies]
+tempfile = "3"
