@@ -1,0 +1,16 @@
+node_modules/
+.next/
+dist/
+target/
+.turbo/
+.agents/
+.scratch/
+coverage/
+apps/desktop/src-tauri/gen/
+apps/web/next-env.d.ts
+bun.lock
+Cargo.lock
+packages/protocol/src/generated.ts
+packages/protocol/fixtures/
+packages/protocol/schemas/protocol.schema.json
+*.tsbuildinfo
