@@ -8,11 +8,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use uuid::Uuid;
 
-use crate::bus::EventBus;
-use crate::db::{ConversationRow, Database, MessageRow, ProviderConfigRow, RunRow, TaskRow};
 use crate::error::{CoreError, CoreResult};
-use crate::events::{validate_event, SUPPORTED_SCHEMA_VERSION};
-use crate::model::{stream_openai_chat, ChatMessage};
+use crate::events::{validate_event, EventBus, SUPPORTED_SCHEMA_VERSION};
+use crate::persistence::{
+    ConversationRow, Database, MessageRow, ProviderConfigRow, RunRow, TaskRow,
+};
+use crate::providers::{stream_openai_chat, ChatMessage};
 use crate::vault::CredentialVault;
 
 pub const CORE_VERSION: &str = env!("CARGO_PKG_VERSION");

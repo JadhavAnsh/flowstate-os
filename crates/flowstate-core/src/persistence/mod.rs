@@ -3,45 +3,12 @@ use std::path::Path;
 use chrono::{DateTime, Utc};
 use flowstate_protocol::Event;
 use rusqlite::{params, Connection};
-use serde::{Deserialize, Serialize};
 
 use crate::error::{CoreError, CoreResult};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ConversationRow {
-    pub id: String,
-    pub title: String,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
-}
+mod models;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MessageRow {
-    pub id: String,
-    pub conversation_id: String,
-    pub role: String,
-    pub content: String,
-    pub created_at: DateTime<Utc>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TaskRow {
-    pub id: String,
-    pub title: String,
-    pub status: String,
-    pub conversation_id: Option<String>,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RunRow {
-    pub id: String,
-    pub task_id: String,
-    pub status: String,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
-}
+pub use models::{ConversationRow, MessageRow, ProviderConfigRow, RunRow, TaskRow};
 
 pub struct Database {
     conn: Connection,
@@ -339,13 +306,6 @@ impl Database {
             updated_at: now,
         })
     }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ProviderConfigRow {
-    pub provider_id: String,
-    pub default_model: String,
-    pub updated_at: DateTime<Utc>,
 }
 
 fn parse_dt(raw: String) -> rusqlite::Result<DateTime<Utc>> {

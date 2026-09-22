@@ -1,43 +1,22 @@
-import { useCallback, useRef } from "react";
+import { useCallback, useRef } from "react"
+import { invoke } from "@tauri-apps/api/core"
 
-export function useSpeechOutput() {
-  const spokenRef = useRef("");
-  const enabledRef = useRef(true);
+export function useSpeechOutput(onError?: (message: string) => void) {
+  const onErrorRef = useRef(onError)
+  onErrorRef.current = onError
 
   const cancel = useCallback(() => {
-    if (typeof window !== "undefined" && "speechSynthesis" in window) {
-      window.speechSynthesis.cancel();
-    }
-    spokenRef.current = "";
-  }, []);
+    void invoke("cancel_speech").catch((error) =>
+      onErrorRef.current?.(String(error))
+    )
+  }, [])
 
-  const reset = useCallback(() => {
-    spokenRef.current = "";
-  }, []);
+  const speak = useCallback((text: string) => {
+    if (!text.trim()) return
+    void invoke("speak_text", { text }).catch((error) =>
+      onErrorRef.current?.(String(error))
+    )
+  }, [])
 
-  const speakDelta = useCallback((fullText: string) => {
-    if (!enabledRef.current || !fullText.startsWith(spokenRef.current)) {
-      spokenRef.current = fullText;
-      return;
-    }
-    const delta = fullText.slice(spokenRef.current.length);
-    spokenRef.current = fullText;
-    if (!delta.trim() || !("speechSynthesis" in window)) {
-      return;
-    }
-    const utterance = new SpeechSynthesisUtterance(delta);
-    utterance.rate = 1;
-    window.speechSynthesis.speak(utterance);
-  }, []);
-
-  const speakAll = useCallback((text: string) => {
-    if (!enabledRef.current || !text.trim() || !("speechSynthesis" in window)) {
-      return;
-    }
-    spokenRef.current = text;
-    const utterance = new SpeechSynthesisUtterance(text);
-    window.speechSynthesis.speak(utterance);
-  }, []);
-
-  return { cancel, reset, speakDelta, speakAll, setEnabled: (v: boolean) => { enabledRef.current = v; } };
+  return { cancel, speak }
 }

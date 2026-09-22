@@ -1,4 +1,5 @@
-use std::sync::Arc;
+use std::process::{Child, Command};
+use std::sync::{Arc, Mutex};
 
 use flowstate_core::{
     ConversationRow, CoreHealth, FlowStateCore, MessageRow, ProviderPublicConfig, ProviderStatus,
@@ -9,6 +10,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, RunEvent, State};
 
 struct AppCore(pub Arc<FlowStateCore>);
+struct SpeechOutput(Mutex<Option<Child>>);
 
 #[derive(Serialize)]
 struct CommandError {
@@ -31,6 +33,44 @@ impl From<flowstate_core::CoreError> for CommandError {
             message: value.to_string(),
         }
     }
+}
+
+fn speech_error(error: impl ToString) -> CommandError {
+    CommandError {
+        code: "speech_output_error".to_string(),
+        message: error.to_string(),
+    }
+}
+
+fn stop_speech(active: &mut Option<Child>) -> Result<(), CommandError> {
+    if let Some(mut child) = active.take() {
+        if child.try_wait().map_err(speech_error)?.is_none() {
+            child.kill().map_err(speech_error)?;
+        }
+        child.wait().map_err(speech_error)?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn cancel_speech(speech: State<'_, SpeechOutput>) -> Result<(), CommandError> {
+    let mut active = speech.0.lock().map_err(speech_error)?;
+    stop_speech(&mut active)
+}
+
+#[tauri::command]
+fn speak_text(speech: State<'_, SpeechOutput>, text: String) -> Result<(), CommandError> {
+    let mut active = speech.0.lock().map_err(speech_error)?;
+    stop_speech(&mut active)?;
+    if text.trim().is_empty() {
+        return Ok(());
+    }
+    let child = Command::new("/usr/bin/say")
+        .arg(text)
+        .spawn()
+        .map_err(speech_error)?;
+    *active = Some(child);
+    Ok(())
 }
 
 fn toggle_hud_window(app: &AppHandle) {
@@ -232,10 +272,13 @@ pub fn run() {
             let core = Arc::new(FlowStateCore::open(data_dir).expect("open FlowState Core"));
             spawn_event_forwarder(app.handle(), Arc::clone(&core));
             app.manage(AppCore(core));
+            app.manage(SpeechOutput(Mutex::new(None)));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             toggle_hud,
+            cancel_speech,
+            speak_text,
             core_health,
             session_snapshot,
             set_active_conversation,
@@ -260,6 +303,11 @@ pub fn run() {
         .expect("error while running tauri application")
         .run(|app_handle, event| {
             if let RunEvent::Exit = event {
+                if let Some(speech) = app_handle.try_state::<SpeechOutput>() {
+                    if let Ok(mut active) = speech.0.lock() {
+                        let _ = stop_speech(&mut active);
+                    }
+                }
                 if let Some(core) = app_handle.try_state::<AppCore>() {
                     let _ = core.0.shutdown();
                 }
