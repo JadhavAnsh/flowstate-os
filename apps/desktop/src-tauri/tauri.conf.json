@@ -15,20 +15,23 @@
       {
         "label": "main",
         "title": "FlowState OS",
-        "width": 960,
-        "height": 720
+        "width": 1180,
+        "height": 780,
+        "minWidth": 760,
+        "minHeight": 620
       },
       {
         "label": "hud",
         "title": "FlowState HUD",
-        "width": 560,
-        "height": 148,
+        "width": 660,
+        "height": 380,
         "decorations": false,
         "transparent": true,
+        "shadow": false,
         "alwaysOnTop": true,
         "visible": false,
         "skipTaskbar": true,
-        "center": true,
+        "center": false,
         "resizable": false
       }
     ],

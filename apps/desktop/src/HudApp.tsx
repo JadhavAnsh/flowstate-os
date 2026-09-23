@@ -1,166 +1,185 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import { invoke } from "@tauri-apps/api/core"
-import { parseProtocolRecord, type Event } from "@flowstate/protocol"
+import { listen } from "@tauri-apps/api/event"
+import { type Event } from "@flowstate/protocol"
 import { ensureActiveConversation } from "./shared/conversation"
-import { hudTitle, phaseFromEvents } from "./shared/runtimePhase"
 import { useFlowStateEvents } from "./hooks/useFlowStateEvents"
-import { useSpeechInput } from "./hooks/useSpeechInput"
 import { useSpeechOutput } from "./hooks/useSpeechOutput"
 import { useCommandDoubleTap } from "./hooks/useCommandDoubleTap"
 import "./Hud.css"
 
 export default function HudApp() {
   useCommandDoubleTap()
+  const [revealed, setRevealed] = useState(false)
   const [conversationId, setConversationId] = useState<string | null>(null)
-  const [partial, setPartial] = useState("")
   const [error, setError] = useState<string | null>(null)
   const [assistantStream, setAssistantStream] = useState("")
-  const pttActiveRef = useRef(false)
-  const { cancel: cancelSpeech, speak } = useSpeechOutput(setError)
+  const [expanded, setExpanded] = useState(false)
+  const [awaitingResponse, setAwaitingResponse] = useState(false)
+  const { speak } = useSpeechOutput(setError)
   const assistantStreamRef = useRef("")
+
+  useEffect(() => {
+    let disposed = false
+    let unlisten: (() => void) | undefined
+    let frame = 0
+    let revision = 0
+    const reveal = (visible: boolean) => {
+      cancelAnimationFrame(frame)
+      if (!visible) {
+        setRevealed(false)
+        return
+      }
+      // Give a newly shown native window one painted collapsed frame.
+      frame = requestAnimationFrame(() => {
+        frame = requestAnimationFrame(() => setRevealed(true))
+      })
+    }
+    void (async () => {
+      unlisten = await listen<boolean>("hud-reveal", ({ payload }) => {
+        revision++
+        if (!disposed) reveal(payload)
+      })
+      if (disposed) {
+        unlisten()
+        return
+      }
+      const before = revision
+      const visible = await invoke<boolean>("hud_ready")
+      if (!disposed && before === revision) reveal(visible)
+    })().catch((err) => {
+      if (!disposed) setError(String(err))
+    })
+    return () => {
+      disposed = true
+      unlisten?.()
+      cancelAnimationFrame(frame)
+    }
+  }, [])
+
   const handleLiveEvent = useCallback(
     (event: Event) => {
       if (event.type === "model.delta") {
         if ((event.payload as { source?: string }).source !== "voice") return
-        const delta = (event.payload as { delta?: string }).delta ?? ""
-        assistantStreamRef.current += delta
+        assistantStreamRef.current +=
+          (event.payload as { delta?: string }).delta ?? ""
         setAssistantStream(assistantStreamRef.current)
       } else if (event.type === "model.completed") {
         if ((event.payload as { source?: string }).source !== "voice") return
+        setAwaitingResponse(false)
         const text = (event.payload as { text?: string }).text
         if (text) speak(text)
+        setAssistantStream(text || assistantStreamRef.current)
         assistantStreamRef.current = ""
-        setAssistantStream("")
       } else if (event.type === "task.failed") {
+        setAwaitingResponse(false)
         assistantStreamRef.current = ""
         setAssistantStream("")
       }
     },
     [speak]
   )
-  const { events, setEvents } = useFlowStateEvents(handleLiveEvent)
+  useFlowStateEvents(handleLiveEvent)
 
-  const phase = useMemo(() => phaseFromEvents(events), [events])
-  const copy = hudTitle(phase)
+  const loadWidget = useCallback(async () => {
+    setError(null)
+    try {
+      const active = await ensureActiveConversation()
+      setConversationId(active)
+    } catch (err) {
+      setError(`Widget unavailable: ${String(err)}`)
+    }
+  }, [])
 
   useEffect(() => {
-    ensureActiveConversation()
-      .then(setConversationId)
-      .catch((err) => setError(String(err)))
-    invoke<Event[]>("list_events", { limit: 200 })
-      .then((stored) =>
-        setEvents(stored.map((e) => parseProtocolRecord("Event", e)))
-      )
-      .catch(() => undefined)
-  }, [setEvents])
+    void loadWidget()
+  }, [loadWidget])
 
-  const submitTranscript = useCallback(
-    async (text: string) => {
-      if (!conversationId || !text.trim()) return
-      setError(null)
-      try {
-        await invoke("send_message", {
-          conversationId,
-          content: text.trim(),
-          source: "voice",
-        })
-      } catch (err) {
-        setError(String(err))
-      }
-    },
-    [conversationId]
-  )
-
-  const speech = useSpeechInput({
-    onPartial: (text) => {
-      setPartial(text)
-      if (conversationId) {
-        invoke("voice_transcript_partial", { conversationId, text }).catch(
-          () => undefined
-        )
-      }
-    },
-    onFinal: (text) => {
-      setPartial("")
-      submitTranscript(text).catch(() => undefined)
-    },
-    onError: (message) => {
-      pttActiveRef.current = false
-      setError(message)
-    },
-  })
-
-  function onPushToTalkStart(event: React.PointerEvent<HTMLButtonElement>) {
-    event.preventDefault()
-    event.stopPropagation()
-    if (!conversationId || pttActiveRef.current) return
-
-    pttActiveRef.current = true
-    setError(null)
-    setPartial("")
-    setAssistantStream("")
-    assistantStreamRef.current = ""
-    cancelSpeech()
-
-    // Must run synchronously in the pointer gesture (await before start() crashes WebKit on macOS).
-    speech.start()
-
-    void (async () => {
-      try {
-        await invoke("cancel_active_run")
-        await invoke("voice_listening_started", { conversationId })
-      } catch (err) {
-        pttActiveRef.current = false
-        speech.stop()
-        setError(String(err))
-      }
-    })()
-  }
-
-  function onPushToTalkEnd(event: React.PointerEvent<HTMLButtonElement>) {
-    event.preventDefault()
-    event.stopPropagation()
-    if (!conversationId || !pttActiveRef.current) return
-
-    pttActiveRef.current = false
-    speech.stop()
-    void invoke("voice_listening_stopped", { conversationId }).catch(
-      () => undefined
-    )
-  }
-
-  async function openMain() {
-    if (!conversationId) return
+  async function openDashboard() {
     await invoke("focus_main_window", { conversationId })
   }
+  const hideWidget = useCallback(async () => {
+    await invoke("hide_hud")
+  }, [])
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault()
+        void hideWidget()
+      }
+    }
+    window.addEventListener("keydown", onKeyDown)
+    return () => window.removeEventListener("keydown", onKeyDown)
+  }, [hideWidget])
+
+  const displayText = error || assistantStream
+  const surface =
+    expanded && displayText ? "expanded" : displayText ? "response" : "compact"
+  const thinking = awaitingResponse && !assistantStream
+  useEffect(() => {
+    void invoke("set_hud_surface", { surface }).catch(() => undefined)
+  }, [surface])
+
+  const active = awaitingResponse
+  useEffect(() => {
+    void invoke("set_hud_busy", { busy: active }).catch(() => undefined)
+  }, [active])
 
   return (
-    <div className="hud-shell">
-      <div className="hud-card">
-        <div className="hud-copy">
-          <strong>{copy.title}</strong>
-          <span>{copy.subtitle}</span>
-          {partial ? <p className="hud-partial">{partial}</p> : null}
-          {assistantStream ? (
-            <p className="hud-stream">{assistantStream}</p>
-          ) : null}
-          {error ? <p className="hud-error">{error}</p> : null}
+    <main
+      className="hud-stage"
+      data-revealed={revealed}
+      data-surface={surface}
+      data-thinking={thinking}
+    >
+      <section
+        className={`lens ${active ? "is-active" : ""} ${error ? "has-error" : ""}`}
+        aria-live="polite"
+        aria-hidden={!revealed}
+        inert={!revealed}
+      >
+        <button
+          type="button"
+          className="flow-orb"
+          onClick={() => void openDashboard()}
+          aria-label="Open FlowState dashboard"
+        >
+          <span />
+        </button>
+        <div className="waveform" aria-hidden="true">
+          {[0, 1, 2, 3].map((bar) => (
+            <i key={bar} />
+          ))}
         </div>
-        <div className="hud-actions">
+        <span className="sr-only" role="status">
+          {error
+            ? "Flow needs attention"
+            : thinking
+              ? "Thinking"
+              : "FlowState ready"}
+        </span>
+        {displayText && (
           <button
             type="button"
-            className="ptt"
-            onPointerDown={onPushToTalkStart}
-            onPointerUp={onPushToTalkEnd}
-            onPointerCancel={onPushToTalkEnd}
+            className="lens-response"
+            aria-label={expanded ? "Collapse response" : "Expand response"}
+            aria-expanded={expanded}
+            onClick={() => setExpanded(!expanded)}
           >
-            Hold to talk
+            {displayText}
           </button>
-          <button type="button" className="ghost" onClick={() => openMain()}>
-            Open console
+        )}
+        {error ? (
+          <button
+            type="button"
+            className="retry"
+            onClick={() => void loadWidget()}
+          >
+            Try again
           </button>
-        </div>
-      </div>
-    </div>
+        ) : null}
+      </section>
+    </main>
   )
 }

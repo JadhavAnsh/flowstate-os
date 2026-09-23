@@ -4,6 +4,12 @@
   "description": "Capability for main and HUD windows",
   "windows": ["main", "hud"],
   "permissions": [
-    "core:default"
+    "core:default",
+    "core:window:allow-current-monitor",
+    "core:window:allow-get-all-windows",
+    "core:window:allow-hide",
+    "core:window:allow-is-minimized",
+    "core:window:allow-set-position",
+    "core:window:allow-show"
   ]
 }

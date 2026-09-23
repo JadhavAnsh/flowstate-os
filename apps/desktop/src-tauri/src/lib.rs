@@ -1,3 +1,5 @@
+mod hud;
+
 use std::process::{Child, Command};
 use std::sync::{Arc, Mutex};
 
@@ -71,24 +73,6 @@ fn speak_text(speech: State<'_, SpeechOutput>, text: String) -> Result<(), Comma
         .map_err(speech_error)?;
     *active = Some(child);
     Ok(())
-}
-
-fn toggle_hud_window(app: &AppHandle) {
-    let Some(hud) = app.get_webview_window("hud") else {
-        return;
-    };
-    if hud.is_visible().unwrap_or(false) {
-        let _ = hud.hide();
-    } else {
-        let _ = hud.center();
-        let _ = hud.show();
-        let _ = hud.set_focus();
-    }
-}
-
-#[tauri::command]
-fn toggle_hud(app: AppHandle) {
-    toggle_hud_window(&app);
 }
 
 #[tauri::command]
@@ -273,10 +257,15 @@ pub fn run() {
             spawn_event_forwarder(app.handle(), Arc::clone(&core));
             app.manage(AppCore(core));
             app.manage(SpeechOutput(Mutex::new(None)));
+            hud::start(app.handle());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            toggle_hud,
+            hud::show_hud,
+            hud::hide_hud,
+            hud::hud_ready,
+            hud::set_hud_busy,
+            hud::set_hud_surface,
             cancel_speech,
             speak_text,
             core_health,
@@ -303,6 +292,9 @@ pub fn run() {
         .expect("error while running tauri application")
         .run(|app_handle, event| {
             if let RunEvent::Exit = event {
+                if let Some(hud) = app_handle.try_state::<hud::HudState>() {
+                    hud.stopped.store(true, std::sync::atomic::Ordering::Relaxed);
+                }
                 if let Some(speech) = app_handle.try_state::<SpeechOutput>() {
                     if let Ok(mut active) = speech.0.lock() {
                         let _ = stop_speech(&mut active);

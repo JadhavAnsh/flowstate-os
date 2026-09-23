@@ -4,7 +4,7 @@
 
 ## Platform
 
-web
+adaptive
 
 ## Users
 
@@ -40,11 +40,11 @@ A neighboring chat product cannot truthfully copy this: FlowState owns context, 
 
 ## Operating Context
 
-Primary launch is macOS. The full desktop app is an operating console, not only a chat window, and it coexists with a global voice HUD. Web (Next.js) is marketing, account, devices, integrations, and remote overview — the core computer agent does not run there. Cloud (Bun/Elysia) is a control plane; the device is the preferred execution plane. Mobile is a later companion (voice, status, approvals, remote Mac control).
+Primary launch is macOS. The full desktop app is an operating console, not only a chat window, and it coexists with a global voice HUD. Web (Next.js) is marketing, account, devices, integrations, and remote overview — the core computer agent does not run there. Cloud (Bun/Elysia) is a control plane; the device is the preferred execution plane. Mobile is a later companion (voice, status, approvals, remote Mac control); only macOS is implemented today.
 
 Users enter by global keyboard shortcut, microphone, or HUD. They address the product as **Flow**. Six primary surfaces sit under voice: Ask, Code, Tasks, Agents, Automations, Library.
 
-This repo is Phase 0: three shells (`apps/desktop` Tauri/React, `apps/web` Next.js, `apps/api` Bun/Elysia) plus a shared protocol. Desktop is the primary design surface. Current UIs are scaffolds, not the product.
+This repo is Phase 0 plus Phase 1: three shells (`apps/desktop` Tauri/React, `apps/web` Next.js, `apps/api` Bun/Elysia), a shared protocol, and the Rust `flowstate-core` runtime. Desktop is the primary design surface. Phase 1 — Mac Foundation is complete: Core hosted in Tauri, local event bus, SQLite persistence, BYOK vault in macOS secure storage, streaming model calls through one provider, conversation/Task/Run text loop, global HUD, streaming speech in, and streaming speech out with barge-in. The desktop UI is Phase 1 scaffolding that proves the wiring, not the product design; the design requirement in Capabilities and Constraints has not yet been applied to it.
 
 Confirmed terminology: Task (finite job), Agent (persistent entity with goals, tools, permissions, memory), Workflow (trigger-based repeatable automation), Artifact, Event (`schemaVersion: 1`; reject unsupported versions), Skill, Tool, Memory, Permission, Device, HUD.
 
@@ -63,9 +63,13 @@ MVP requires the macOS Tauri app, Core, global voice HUD, speech in/out with int
 
 Not in first MVP: marketplace, teams, Windows, Linux, Android, advanced multi-agent orchestration, wake word, full cloud execution, enterprise admin, hundreds of integrations.
 
-Current codebase implements the Phase 0 protocol only. Detailed runtime behavior is later phases.
+Current codebase implements the Phase 0 protocol and Phase 1 runtime (Core, event bus, SQLite, BYOK, streaming model + voice in/out, HUD). Coding agent, computer control, Skills/MCP, and the full model router are later phases.
 
-Undecided: accessibility standard (no WCAG target set), visual identity, and any non-PRD brand assets.
+Design requirement (PRD §82, binding on visual work): the interface must communicate speed, awareness, calmness, precision, progress, and control; avoid making every action feel like a chat transcript; prefer live states, task timelines, compact action cards, artifacts, progress surfaces, permission prompts, and ambient HUD interactions. Chat is one interface into FlowState, not the product architecture.
+
+Product language (PRD §83, binding on copy): prefer "Working", "Done", "Needs approval", "Blocked", "Waiting", "Running tests", "Watching", "Scheduled". Avoid AI terminology in normal user flows; users care about the outcome, not the mechanism.
+
+Undecided: visual identity, and any non-PRD brand assets.
 
 ## Brand Commitments
 
@@ -80,7 +84,9 @@ No logo, type, or color system is binding. Do not invent a visual world from thi
 
 - Product requirements: `FlowState-OS.md` (Draft v1.0). Binding product truth; not visual direction.
 - Protocol source of truth: `packages/protocol/schemas/protocol.schema.json`.
+- Phase 1 work packet: `.scratch/phase-1-mac-foundation/` (spec plus tickets 01–09, all resolved). Records what Phase 1 actually delivered.
 - Shells exist as placeholders (`apps/desktop`, `apps/web`, `apps/api`). They prove wiring, not UX.
+- No user research, no beta users, no measured metrics on hand. Success targets in the PRD are goals, not results.
 
 Do not fabricate testimonials, customers, benchmarks, pricing, screenshots of a finished product, or third-party endorsements.
 
@@ -91,3 +97,7 @@ Do not fabricate testimonials, customers, benchmarks, pricing, screenshots of a 
 3. **Action over explanation** — accomplish the outcome; do not narrate how the user could.
 4. **User remains the authority** — autonomy is earned through permissions, confirmations, and an audit trail.
 5. **Own the layer, rent the model** — context, tools, memory, workflows, permissions, and execution are the product.
+
+## Accessibility & Inclusion
+
+Priority order confirmed for desktop work: full keyboard operability (every surface reachable and completable without a pointer) and VoiceOver support (labels, roles, and state announcements for live HUD and task states) come first. The product is voice-first and shortcut-driven, so those are the paths users actually take. Broader WCAG conformance is not claimed; future work must not assert a WCAG level until one is set.
