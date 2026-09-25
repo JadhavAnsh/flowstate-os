@@ -62,9 +62,8 @@ pub async fn stream_openai_chat(
                 if data == "[DONE]" {
                     continue;
                 }
-                let parsed: StreamChunk = serde_json::from_str(data).map_err(|e| {
-                    CoreError::Provider(format!("invalid stream chunk: {e}"))
-                })?;
+                let parsed: StreamChunk = serde_json::from_str(data)
+                    .map_err(|e| CoreError::Provider(format!("invalid stream chunk: {e}")))?;
                 if let Some(choice) = parsed.choices.first() {
                     if let Some(delta) = &choice.delta.content {
                         assembled.push_str(delta);

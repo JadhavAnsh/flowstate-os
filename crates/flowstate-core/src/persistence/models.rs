@@ -43,3 +43,15 @@ pub struct ProviderConfigRow {
     pub default_model: String,
     pub updated_at: DateTime<Utc>,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PendingPermissionRow {
+    pub id: String,
+    pub conversation_id: String,
+    pub task_id: String,
+    pub content: String,
+    pub source: String,
+    pub reason_code: String,
+    pub status: String,
+    pub created_at: DateTime<Utc>,
+}

@@ -1,4 +1,7 @@
 import { useEffect, useMemo, useState } from "react"
+import { invoke } from "@tauri-apps/api/core"
+import { listen } from "@tauri-apps/api/event"
+import { ensureActiveConversation } from "./shared/conversation"
 import "./Onboarding.css"
 
 type OnboardingProps = { onComplete: () => void }
@@ -57,6 +60,10 @@ export default function Onboarding({ onComplete }: OnboardingProps) {
   const [shortcutVerified, setShortcutVerified] = useState(false)
   const [voiceHeld, setVoiceHeld] = useState(false)
   const [voiceTested, setVoiceTested] = useState(false)
+  const [speechAssetProgress, setSpeechAssetProgress] = useState<number | null>(
+    null
+  )
+  const [speechAssetError, setSpeechAssetError] = useState<string | null>(null)
   const [selectedApps, setSelectedApps] = useState<string[]>([
     "Finder",
     "Notes",
@@ -81,6 +88,30 @@ export default function Onboarding({ onComplete }: OnboardingProps) {
     return () => {
       window.removeEventListener("keydown", down)
       window.removeEventListener("keyup", up)
+    }
+  }, [step])
+
+  useEffect(() => {
+    if (step !== 5) return
+    let disposed = false
+    let unlisten: (() => void) | undefined
+    void (async () => {
+      unlisten = await listen<{
+        event: string
+        payload: { fraction?: number }
+      }>("apple-runtime-event", ({ payload }) => {
+        if (!disposed && payload.event === "asset_progress")
+          setSpeechAssetProgress(payload.payload.fraction ?? 0)
+      })
+      setSpeechAssetProgress(0)
+      await invoke("install_speech_assets")
+      if (!disposed) setSpeechAssetProgress(1)
+    })().catch((reason) => {
+      if (!disposed) setSpeechAssetError(String(reason))
+    })
+    return () => {
+      disposed = true
+      unlisten?.()
     }
   }, [step])
 
@@ -332,26 +363,24 @@ export default function Onboarding({ onComplete }: OnboardingProps) {
             <button
               type="button"
               className={`hold-to-talk ${voiceHeld ? "active" : ""}`}
-              onPointerDown={() => setVoiceHeld(true)}
+              disabled={speechAssetProgress !== 1}
+              onPointerDown={() => {
+                setVoiceHeld(true)
+                void ensureActiveConversation()
+                  .then((conversationId) =>
+                    invoke("start_voice_capture", { conversationId })
+                  )
+                  .catch((reason) => setSpeechAssetError(String(reason)))
+              }}
               onPointerUp={() => {
                 setVoiceHeld(false)
-                setVoiceTested(true)
+                void invoke("stop_voice_capture")
+                  .then(() => setVoiceTested(true))
+                  .catch((reason) => setSpeechAssetError(String(reason)))
               }}
-              onPointerLeave={() => {
-                if (voiceHeld) {
-                  setVoiceHeld(false)
-                  setVoiceTested(true)
-                }
-              }}
-              onKeyDown={(event) => {
-                if (event.key === " " || event.key === "Enter")
-                  setVoiceHeld(true)
-              }}
-              onKeyUp={(event) => {
-                if (event.key === " " || event.key === "Enter") {
-                  setVoiceHeld(false)
-                  setVoiceTested(true)
-                }
+              onPointerCancel={() => {
+                setVoiceHeld(false)
+                void invoke("cancel_voice_capture")
               }}
             >
               <span className="mic-shape" />
@@ -359,8 +388,13 @@ export default function Onboarding({ onComplete }: OnboardingProps) {
                 ? "Listening…"
                 : voiceTested
                   ? "Nice. Flow heard you."
-                  : "Hold to talk"}
+                  : speechAssetProgress === 1
+                    ? "Hold to talk"
+                    : `Preparing speech… ${Math.round((speechAssetProgress ?? 0) * 100)}%`}
             </button>
+            {speechAssetError ? (
+              <p className="verification">{speechAssetError}</p>
+            ) : null}
           </div>
         ) : null}
 

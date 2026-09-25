@@ -4,9 +4,9 @@
   "version": "0.1.0",
   "identifier": "com.flowstate.os",
   "build": {
-    "beforeDevCommand": "bun run dev",
+    "beforeDevCommand": "bun run build:native && bun run dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "bun run build",
+    "beforeBuildCommand": "bun ../../scripts/unlock-flowstate-signing.mjs && bun run build:native && bun run build",
     "frontendDist": "../dist"
   },
   "app": {
@@ -42,6 +42,7 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "externalBin": ["binaries/flowstate-apple-runtime"],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -50,7 +51,9 @@
       "icons/icon.ico"
     ],
     "macOS": {
-      "infoPlist": "Info.plist"
+      "entitlements": "Entitlements.plist",
+      "infoPlist": "Info.plist",
+      "signingIdentity": "FlowState OS Local Build Signing"
     }
   }
 }

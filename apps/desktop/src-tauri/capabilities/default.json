@@ -10,6 +10,17 @@
     "core:window:allow-hide",
     "core:window:allow-is-minimized",
     "core:window:allow-set-position",
-    "core:window:allow-show"
+    "core:window:allow-show",
+    {
+      "identifier": "shell:allow-execute",
+      "allow": [
+        {
+          "name": "flowstate-apple-runtime",
+          "cmd": "binaries/flowstate-apple-runtime",
+          "sidecar": true,
+          "args": false
+        }
+      ]
+    }
   ]
 }

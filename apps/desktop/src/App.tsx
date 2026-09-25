@@ -12,6 +12,7 @@ import { useFlowStateEvents } from "./hooks/useFlowStateEvents"
 import { useSpeechOutput } from "./hooks/useSpeechOutput"
 import { useCommandDoubleTap } from "./hooks/useCommandDoubleTap"
 import Onboarding from "./Onboarding"
+import Settings from "./Settings"
 import "./App.css"
 
 type CoreHealth = { status: string; version: string; protocol_version: number }
@@ -35,7 +36,20 @@ type ProviderStatus = {
   connected: boolean
   default_model: string
 }
+type AppleRuntimeStatus = {
+  locale: string
+  speechAvailable: boolean
+  speechAssetStatus: string
+  modelAvailable: boolean
+  modelReason: string
+}
 type WidgetState = "ready" | "opening" | "unavailable"
+type ActivePage = "dashboard" | "settings"
+type PendingApproval = {
+  permissionId: string
+  summary: string
+  reasonCode: string
+}
 
 const navItems = [
   "Dashboard",
@@ -68,11 +82,19 @@ function DashboardApp({
   const [streaming, setStreaming] = useState("")
   const [voicePartial, setVoicePartial] = useState("")
   const [provider, setProvider] = useState<ProviderStatus | null>(null)
+  const [appleRuntime, setAppleRuntime] = useState<AppleRuntimeStatus | null>(
+    null
+  )
   const [apiKeyDraft, setApiKeyDraft] = useState("")
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [widgetState, setWidgetState] = useState<WidgetState>("ready")
-  const { speak, cancel: cancelSpeech } = useSpeechOutput(setError)
+  const [activePage, setActivePage] = useState<ActivePage>(() =>
+    window.location.pathname === "/settings" ? "settings" : "dashboard"
+  )
+  const [pendingApproval, setPendingApproval] =
+    useState<PendingApproval | null>(null)
+  const { push, finish, cancel: cancelSpeech } = useSpeechOutput(setError)
   const streamingRef = useRef("")
   const conversationIdRef = useRef(conversationId)
   conversationIdRef.current = conversationId
@@ -88,8 +110,9 @@ function DashboardApp({
   }, [])
 
   useEffect(() => {
-    if (window.location.pathname !== "/dashboard") {
-      window.history.replaceState({ route: "dashboard" }, "", "/dashboard")
+    const route = `/${activePage}`
+    if (window.location.pathname !== route) {
+      window.history.replaceState({ route: activePage }, "", route)
     }
     const mainWindow = getCurrentWindow()
     let wasMinimized = false
@@ -110,7 +133,7 @@ function DashboardApp({
       window.clearInterval(poll)
       void unlisten.then((stop) => stop())
     }
-  }, [showWidget])
+  }, [activePage, showWidget])
 
   const refreshMessages = useCallback(async (id: string) => {
     const rows = await invoke<Message[]>("list_messages", {
@@ -131,20 +154,21 @@ function DashboardApp({
         const payload = event.payload as { partial?: boolean; text?: string }
         if (payload.partial && payload.text) setVoicePartial(payload.text)
       } else if (event.type === "model.delta") {
-        streamingRef.current +=
-          (event.payload as { delta?: string }).delta ?? ""
+        const payload = event.payload as { delta?: string; source?: string }
+        const delta = payload.delta ?? ""
+        streamingRef.current += delta
+        if (payload.source !== "voice") push(delta)
         setStreaming(streamingRef.current)
+      } else if (event.type === "permission.requested") {
+        setPendingApproval(event.payload as PendingApproval)
+        setBusy(false)
       } else if (
         event.type === "model.completed" ||
         event.type === "task.failed"
       ) {
         const payload = event.payload as { text?: string; source?: string }
-        if (
-          event.type === "model.completed" &&
-          payload.text &&
-          payload.source !== "voice"
-        )
-          speak(payload.text)
+        if (event.type === "model.completed" && payload.source !== "voice")
+          finish()
         streamingRef.current = ""
         setStreaming("")
         setVoicePartial("")
@@ -152,21 +176,23 @@ function DashboardApp({
           refreshMessages(conversationIdRef.current).catch(() => undefined)
       }
     },
-    [refreshMessages, speak]
+    [finish, push, refreshMessages]
   )
   const { events, setEvents } = useFlowStateEvents(handleLiveEvent)
   const runtimePhase = useMemo(() => phaseFromEvents(events), [events])
 
   const bootstrap = useCallback(async () => {
     setError(null)
-    const [h, stored, status] = await Promise.all([
+    const [h, stored, status, localStatus] = await Promise.all([
       invoke<CoreHealth>("core_health"),
       invoke<Event[]>("list_events", { limit: 200 }),
       invoke<ProviderStatus>("provider_status", { providerId: null }),
+      invoke<AppleRuntimeStatus>("apple_runtime_status"),
     ])
     setHealth(h)
     setEvents(stored.map((event) => parseProtocolRecord("Event", event)))
     setProvider(status)
+    setAppleRuntime(localStatus)
     const active = await ensureActiveConversation()
     setConversationId(active)
     await refreshMessages(active)
@@ -225,6 +251,23 @@ function DashboardApp({
     }
   }
 
+  async function resolveApproval(approved: boolean) {
+    if (!pendingApproval) return
+    setBusy(approved)
+    setError(null)
+    try {
+      await invoke("resolve_cloud_approval", {
+        permissionId: pendingApproval.permissionId,
+        approved,
+      })
+      setPendingApproval(null)
+    } catch (reason) {
+      setError(String(reason))
+    } finally {
+      setBusy(false)
+    }
+  }
+
   const latestTask = tasks[0]
   const latestMessage = [...messages]
     .reverse()
@@ -242,8 +285,17 @@ function DashboardApp({
             <button
               key={item}
               type="button"
-              className={index === 0 ? "nav-item active" : "nav-item"}
-              aria-current={index === 0 ? "page" : undefined}
+              className={
+                index === 0 && activePage === "dashboard"
+                  ? "nav-item active"
+                  : "nav-item"
+              }
+              aria-current={
+                index === 0 && activePage === "dashboard" ? "page" : undefined
+              }
+              onClick={
+                index === 0 ? () => setActivePage("dashboard") : undefined
+              }
             >
               <span className="nav-glyph" aria-hidden="true">
                 {index + 1}
@@ -253,6 +305,22 @@ function DashboardApp({
           ))}
         </nav>
         <div className="sidebar-footer">
+          <button
+            type="button"
+            className={
+              activePage === "settings" ? "nav-item active" : "nav-item"
+            }
+            aria-current={activePage === "settings" ? "page" : undefined}
+            onClick={() => setActivePage("settings")}
+          >
+            <span className="nav-glyph nav-glyph-settings" aria-hidden="true">
+              <svg viewBox="0 0 20 20">
+                <circle cx="10" cy="10" r="2.5" />
+                <path d="M10 2.8v2M10 15.2v2M2.8 10h2M15.2 10h2M4.9 4.9l1.4 1.4M13.7 13.7l1.4 1.4M15.1 4.9l-1.4 1.4M6.3 13.7l-1.4 1.4" />
+              </svg>
+            </span>
+            Settings
+          </button>
           <button
             type="button"
             className="nav-item"
@@ -273,183 +341,204 @@ function DashboardApp({
         </div>
       </aside>
 
-      <section className="dashboard">
-        <header className="dashboard-header">
-          <div>
-            <p className="eyebrow">Dashboard</p>
-            <h1>Good afternoon.</h1>
-            <p>What would you like Flow to take care of?</p>
-          </div>
-          <button
-            type="button"
-            className="widget-button"
-            onClick={() => void showWidget()}
-          >
-            <span className="widget-mini" aria-hidden="true">
-              <i />
-              <i />
-              <i />
-            </span>
-            {widgetState === "opening" ? "Opening…" : "Show widget"}
-          </button>
-        </header>
-
-        {widgetState === "unavailable" ? (
-          <div className="notice" role="alert">
+      {activePage === "settings" ? (
+        <Settings />
+      ) : (
+        <section className="dashboard">
+          <header className="dashboard-header">
             <div>
-              <strong>Widget didn’t open</strong>
-              <span>Flow is still available here. Try the widget again.</span>
+              <p className="eyebrow">Dashboard</p>
+              <h1>Good afternoon.</h1>
+              <p>What would you like Flow to take care of?</p>
             </div>
-            <button type="button" onClick={() => void showWidget()}>
-              Try again
-            </button>
-          </div>
-        ) : null}
-        {error ? (
-          <div className="notice error" role="alert">
-            <strong>Flow needs attention</strong>
-            <span>{error}</span>
-          </div>
-        ) : null}
-
-        <section className="command-surface" aria-labelledby="command-title">
-          <div className="command-orb" aria-hidden="true">
-            <span />
-          </div>
-          <div className="command-copy">
-            <p className="command-state">
-              {runtimePhase === "idle" ? "Ready" : runtimePhase}
-            </p>
-            <h2 id="command-title">Ask Flow anything</h2>
-            <p>
-              Start a task, work with a file, or ask about what’s on your
-              screen.
-            </p>
-          </div>
-          <div className="command-input">
-            <textarea
-              value={draft}
-              onChange={(event) => setDraft(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter" && !event.shiftKey) {
-                  event.preventDefault()
-                  void onSend()
-                }
-              }}
-              placeholder="Tell Flow what you want done…"
-              aria-label="Ask Flow"
-              rows={2}
-            />
             <button
               type="button"
-              className="send-button"
-              onClick={() => void onSend()}
-              disabled={busy || !draft.trim()}
-              aria-label="Send"
+              className="widget-button"
+              onClick={() => void showWidget()}
             >
-              {busy ? "···" : "↑"}
-            </button>
-          </div>
-          <div className="command-hints">
-            <span>
-              <kbd>control</kbd> + <kbd>option</kbd> widget
-            </span>
-            <span>Hold the orb to talk</span>
-          </div>
-        </section>
-
-        <div className="dashboard-grid">
-          <section className="dashboard-card active-work">
-            <div className="card-heading">
-              <div>
-                <p className="eyebrow">Current work</p>
-                <h2>{latestTask?.title ?? "Nothing running"}</h2>
-              </div>
-              <span className={`state-pill ${runtimePhase}`}>
-                {latestTask ? statusLabel(latestTask.status) : "Ready"}
+              <span className="widget-mini" aria-hidden="true">
+                <i />
+                <i />
+                <i />
               </span>
-            </div>
-            <div className="work-preview">
-              <span className="work-icon">F</span>
+              {widgetState === "opening" ? "Opening…" : "Show widget"}
+            </button>
+          </header>
+
+          {widgetState === "unavailable" ? (
+            <div className="notice" role="alert">
               <div>
-                <strong>
-                  {voicePartial ||
-                    streaming ||
-                    latestMessage?.content ||
-                    "Flow is ready for your next request."}
-                </strong>
-                <span>
-                  {latestTask
-                    ? `Updated ${new Date(latestTask.updated_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`
-                    : "Your work stays on this Mac."}
+                <strong>Widget didn’t open</strong>
+                <span>Flow is still available here. Try the widget again.</span>
+              </div>
+              <button type="button" onClick={() => void showWidget()}>
+                Try again
+              </button>
+            </div>
+          ) : null}
+          {error ? (
+            <div className="notice error" role="alert">
+              <strong>Flow needs attention</strong>
+              <span>{error}</span>
+            </div>
+          ) : null}
+          {pendingApproval ? (
+            <div className="notice" role="alert">
+              <div>
+                <strong>Cloud approval required</strong>
+                <span>{pendingApproval.summary}</span>
+              </div>
+              <button type="button" onClick={() => void resolveApproval(false)}>
+                Keep local
+              </button>
+              <button type="button" onClick={() => void resolveApproval(true)}>
+                Use cloud
+              </button>
+            </div>
+          ) : null}
+
+          <section className="command-surface" aria-labelledby="command-title">
+            <div className="command-orb" aria-hidden="true">
+              <span />
+            </div>
+            <div className="command-copy">
+              <p className="command-state">
+                {runtimePhase === "idle" ? "Ready" : runtimePhase}
+              </p>
+              <h2 id="command-title">Ask Flow anything</h2>
+              <p>
+                Start a task, work with a file, or ask about what’s on your
+                screen.
+              </p>
+            </div>
+            <div className="command-input">
+              <textarea
+                value={draft}
+                onChange={(event) => setDraft(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" && !event.shiftKey) {
+                    event.preventDefault()
+                    void onSend()
+                  }
+                }}
+                placeholder="Tell Flow what you want done…"
+                aria-label="Ask Flow"
+                rows={2}
+              />
+              <button
+                type="button"
+                className="send-button"
+                onClick={() => void onSend()}
+                disabled={busy || !draft.trim()}
+                aria-label="Send"
+              >
+                {busy ? "···" : "↑"}
+              </button>
+            </div>
+            <div className="command-hints">
+              <span>
+                <kbd>control</kbd> + <kbd>option</kbd> widget
+              </span>
+              <span>Hold the orb to talk</span>
+            </div>
+          </section>
+
+          <div className="dashboard-grid">
+            <section className="dashboard-card active-work">
+              <div className="card-heading">
+                <div>
+                  <p className="eyebrow">Current work</p>
+                  <h2>{latestTask?.title ?? "Nothing running"}</h2>
+                </div>
+                <span className={`state-pill ${runtimePhase}`}>
+                  {latestTask ? statusLabel(latestTask.status) : "Ready"}
                 </span>
               </div>
-            </div>
-          </section>
-          <section className="dashboard-card activity-card">
-            <div className="card-heading">
-              <div>
-                <p className="eyebrow">Activity</p>
-                <h2>Recent events</h2>
+              <div className="work-preview">
+                <span className="work-icon">F</span>
+                <div>
+                  <strong>
+                    {voicePartial ||
+                      streaming ||
+                      latestMessage?.content ||
+                      "Flow is ready for your next request."}
+                  </strong>
+                  <span>
+                    {latestTask
+                      ? `Updated ${new Date(latestTask.updated_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`
+                      : "Your work stays on this Mac."}
+                  </span>
+                </div>
               </div>
-              <span className="count">{events.length}</span>
-            </div>
-            <ol className="activity-list">
-              {timeline.length ? (
-                timeline.map((item) => (
-                  <li key={item.id}>
-                    <span className="activity-mark" />
-                    <strong>{item.type.replace(/\./g, " ")}</strong>
-                    <time>{item.time}</time>
-                  </li>
-                ))
-              ) : (
-                <li className="empty">No activity yet</li>
-              )}
-            </ol>
-          </section>
-          <section className="dashboard-card connection-card">
-            <div className="card-heading">
-              <div>
-                <p className="eyebrow">Connection</p>
-                <h2>Model provider</h2>
+            </section>
+            <section className="dashboard-card activity-card">
+              <div className="card-heading">
+                <div>
+                  <p className="eyebrow">Activity</p>
+                  <h2>Recent events</h2>
+                </div>
+                <span className="count">{events.length}</span>
               </div>
-              <span
-                className={
-                  provider?.connected ? "status-dot" : "status-dot offline"
-                }
-              />
-            </div>
-            <p>
-              {provider?.connected
-                ? `${provider.default_model} is ready.`
-                : "Connect a provider to start completing requests."}
-            </p>
-            {!provider?.connected ? (
-              <div className="key-row">
-                <input
-                  type="password"
-                  value={apiKeyDraft}
-                  onChange={(event) => setApiKeyDraft(event.target.value)}
-                  placeholder="OpenAI API key"
-                  aria-label="OpenAI API key"
+              <ol className="activity-list">
+                {timeline.length ? (
+                  timeline.map((item) => (
+                    <li key={item.id}>
+                      <span className="activity-mark" />
+                      <strong>{item.type.replace(/\./g, " ")}</strong>
+                      <time>{item.time}</time>
+                    </li>
+                  ))
+                ) : (
+                  <li className="empty">No activity yet</li>
+                )}
+              </ol>
+            </section>
+            <section className="dashboard-card connection-card">
+              <div className="card-heading">
+                <div>
+                  <p className="eyebrow">Connection</p>
+                  <h2>Model provider</h2>
+                </div>
+                <span
+                  className={
+                    provider?.connected ? "status-dot" : "status-dot offline"
+                  }
                 />
-                <button
-                  type="button"
-                  onClick={() => void onSaveKey()}
-                  disabled={!apiKeyDraft}
-                >
-                  Connect
-                </button>
               </div>
-            ) : null}
-            <div className="system-meta">
-              Core {health?.status ?? "starting"} · v{health?.version ?? "…"} ·
-              protocol v{health?.protocol_version ?? protocolVersion}
-            </div>
-          </section>
-        </div>
-      </section>
+              <p>
+                {appleRuntime?.modelAvailable
+                  ? `Apple local model and ${appleRuntime.locale} speech are ready.`
+                  : `Apple local model is unavailable: ${appleRuntime?.modelReason ?? "checking"}.`}
+              </p>
+              {!provider?.connected ? (
+                <div className="key-row">
+                  <input
+                    type="password"
+                    value={apiKeyDraft}
+                    onChange={(event) => setApiKeyDraft(event.target.value)}
+                    placeholder="OpenAI API key"
+                    aria-label="OpenAI API key"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => void onSaveKey()}
+                    disabled={!apiKeyDraft}
+                  >
+                    Connect
+                  </button>
+                </div>
+              ) : null}
+              <div className="system-meta">
+                Cloud escalation:{" "}
+                {provider?.connected ? provider.default_model : "not connected"}{" "}
+                · Core {health?.status ?? "starting"} · v
+                {health?.version ?? "…"} · protocol v
+                {health?.protocol_version ?? protocolVersion}
+              </div>
+            </section>
+          </div>
+        </section>
+      )}
     </main>
   )
 }

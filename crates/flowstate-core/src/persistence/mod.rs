@@ -8,7 +8,9 @@ use crate::error::{CoreError, CoreResult};
 
 mod models;
 
-pub use models::{ConversationRow, MessageRow, ProviderConfigRow, RunRow, TaskRow};
+pub use models::{
+    ConversationRow, MessageRow, PendingPermissionRow, ProviderConfigRow, RunRow, TaskRow,
+};
 
 pub struct Database {
     conn: Connection,
@@ -72,6 +74,24 @@ impl Database {
               default_model TEXT NOT NULL,
               updated_at TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS provider_routes (
+              role TEXT PRIMARY KEY,
+              provider_id TEXT NOT NULL,
+              model TEXT NOT NULL,
+              updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS pending_permissions (
+              id TEXT PRIMARY KEY,
+              conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+              task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+              content TEXT NOT NULL,
+              source TEXT NOT NULL,
+              reason_code TEXT NOT NULL,
+              status TEXT NOT NULL,
+              created_at TEXT NOT NULL
+            );
             ",
         )?;
         Ok(())
@@ -81,7 +101,11 @@ impl Database {
         let event_json = serde_json::to_string(event)?;
         self.conn.execute(
             "INSERT INTO events (id, occurred_at, event_json) VALUES (?1, ?2, ?3)",
-            params![event.id.to_string(), event.occurred_at.to_rfc3339(), event_json],
+            params![
+                event.id.to_string(),
+                event.occurred_at.to_rfc3339(),
+                event_json
+            ],
         )?;
         Ok(())
     }
@@ -118,9 +142,9 @@ impl Database {
     }
 
     pub fn list_conversations(&self) -> CoreResult<Vec<ConversationRow>> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT id, title, created_at, updated_at FROM conversations ORDER BY updated_at DESC")?;
+        let mut stmt = self.conn.prepare(
+            "SELECT id, title, created_at, updated_at FROM conversations ORDER BY updated_at DESC",
+        )?;
         let rows = stmt.query_map([], |row| {
             Ok(ConversationRow {
                 id: row.get(0)?,
@@ -140,16 +164,35 @@ impl Database {
         Ok(())
     }
 
-    pub fn insert_message(&self, conversation_id: &str, role: &str, content: &str) -> CoreResult<MessageRow> {
+    pub fn insert_message(
+        &self,
+        conversation_id: &str,
+        role: &str,
+        content: &str,
+    ) -> CoreResult<MessageRow> {
+        self.insert_message_with_id(
+            &uuid::Uuid::new_v4().to_string(),
+            conversation_id,
+            role,
+            content,
+        )
+    }
+
+    pub fn insert_message_with_id(
+        &self,
+        id: &str,
+        conversation_id: &str,
+        role: &str,
+        content: &str,
+    ) -> CoreResult<MessageRow> {
         let now = Utc::now();
-        let id = uuid::Uuid::new_v4().to_string();
         self.conn.execute(
             "INSERT INTO messages (id, conversation_id, role, content, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
             params![id, conversation_id, role, content, now.to_rfc3339()],
         )?;
         self.touch_conversation(conversation_id)?;
         Ok(MessageRow {
-            id,
+            id: id.to_string(),
             conversation_id: conversation_id.to_string(),
             role: role.to_string(),
             content: content.to_string(),
@@ -180,7 +223,13 @@ impl Database {
         self.conn.execute(
             "INSERT INTO tasks (id, title, status, conversation_id, created_at, updated_at)
              VALUES (?1, ?2, 'pending', ?3, ?4, ?5)",
-            params![id, title, conversation_id, now.to_rfc3339(), now.to_rfc3339()],
+            params![
+                id,
+                title,
+                conversation_id,
+                now.to_rfc3339(),
+                now.to_rfc3339()
+            ],
         )?;
         Ok(TaskRow {
             id,
@@ -227,9 +276,9 @@ impl Database {
     }
 
     pub fn get_run(&self, run_id: &str) -> CoreResult<Option<RunRow>> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT id, task_id, status, created_at, updated_at FROM runs WHERE id = ?1")?;
+        let mut stmt = self.conn.prepare(
+            "SELECT id, task_id, status, created_at, updated_at FROM runs WHERE id = ?1",
+        )?;
         let mut rows = stmt.query([run_id])?;
         if let Some(row) = rows.next()? {
             return Ok(Some(RunRow {
@@ -243,7 +292,11 @@ impl Database {
         Ok(None)
     }
 
-    pub fn list_tasks_for_conversation(&self, conversation_id: &str, limit: usize) -> CoreResult<Vec<TaskRow>> {
+    pub fn list_tasks_for_conversation(
+        &self,
+        conversation_id: &str,
+        limit: usize,
+    ) -> CoreResult<Vec<TaskRow>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, title, status, conversation_id, created_at, updated_at FROM tasks
              WHERE conversation_id = ?1 ORDER BY created_at DESC LIMIT ?2",
@@ -292,7 +345,11 @@ impl Database {
         Ok(None)
     }
 
-    pub fn upsert_provider_config(&self, provider_id: &str, default_model: &str) -> CoreResult<ProviderConfigRow> {
+    pub fn upsert_provider_config(
+        &self,
+        provider_id: &str,
+        default_model: &str,
+    ) -> CoreResult<ProviderConfigRow> {
         let now = Utc::now();
         self.conn.execute(
             "INSERT INTO provider_config (provider_id, default_model, updated_at)
@@ -306,10 +363,81 @@ impl Database {
             updated_at: now,
         })
     }
+
+    pub fn upsert_provider_route(
+        &self,
+        role: &str,
+        provider_id: &str,
+        model: &str,
+    ) -> CoreResult<()> {
+        self.conn.execute(
+            "INSERT INTO provider_routes (role, provider_id, model, updated_at) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(role) DO UPDATE SET provider_id = excluded.provider_id, model = excluded.model, updated_at = excluded.updated_at",
+            params![role, provider_id, model, Utc::now().to_rfc3339()],
+        )?;
+        Ok(())
+    }
+
+    pub fn insert_pending_permission(
+        &self,
+        conversation_id: &str,
+        task_id: &str,
+        content: &str,
+        source: &str,
+        reason_code: &str,
+    ) -> CoreResult<PendingPermissionRow> {
+        let row = PendingPermissionRow {
+            id: uuid::Uuid::new_v4().to_string(),
+            conversation_id: conversation_id.to_string(),
+            task_id: task_id.to_string(),
+            content: content.to_string(),
+            source: source.to_string(),
+            reason_code: reason_code.to_string(),
+            status: "pending".to_string(),
+            created_at: Utc::now(),
+        };
+        self.conn.execute(
+            "INSERT INTO pending_permissions (id, conversation_id, task_id, content, source, reason_code, status, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![row.id, row.conversation_id, row.task_id, row.content, row.source, row.reason_code, row.status, row.created_at.to_rfc3339()],
+        )?;
+        Ok(row)
+    }
+
+    pub fn get_pending_permission(&self, id: &str) -> CoreResult<Option<PendingPermissionRow>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, conversation_id, task_id, content, source, reason_code, status, created_at
+             FROM pending_permissions WHERE id = ?1",
+        )?;
+        let mut rows = stmt.query([id])?;
+        if let Some(row) = rows.next()? {
+            return Ok(Some(PendingPermissionRow {
+                id: row.get(0)?,
+                conversation_id: row.get(1)?,
+                task_id: row.get(2)?,
+                content: row.get(3)?,
+                source: row.get(4)?,
+                reason_code: row.get(5)?,
+                status: row.get(6)?,
+                created_at: parse_dt(row.get(7)?)?,
+            }));
+        }
+        Ok(None)
+    }
+
+    pub fn update_permission_status(&self, id: &str, status: &str) -> CoreResult<()> {
+        self.conn.execute(
+            "UPDATE pending_permissions SET status = ?1 WHERE id = ?2",
+            params![status, id],
+        )?;
+        Ok(())
+    }
 }
 
 fn parse_dt(raw: String) -> rusqlite::Result<DateTime<Utc>> {
     DateTime::parse_from_rfc3339(&raw)
         .map(|dt| dt.with_timezone(&Utc))
-        .map_err(|e| rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e)))
+        .map_err(|e| {
+            rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e))
+        })
 }

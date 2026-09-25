@@ -2,6 +2,8 @@ node_modules/
 .next/
 dist/
 target/
+native/apple-runtime/.build/
+apps/desktop/src-tauri/binaries/
 .turbo/
 .env
 .env.*

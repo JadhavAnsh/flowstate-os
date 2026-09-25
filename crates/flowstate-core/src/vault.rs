@@ -23,7 +23,9 @@ impl CredentialVault {
 
     pub fn set_api_key(&self, provider_id: &str, api_key: &str) -> CoreResult<()> {
         let mut store = self.load()?;
-        store.providers.insert(provider_id.to_string(), api_key.to_string());
+        store
+            .providers
+            .insert(provider_id.to_string(), api_key.to_string());
         self.save(&store)
     }
 

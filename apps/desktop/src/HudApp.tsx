@@ -16,8 +16,11 @@ export default function HudApp() {
   const [assistantStream, setAssistantStream] = useState("")
   const [expanded, setExpanded] = useState(false)
   const [awaitingResponse, setAwaitingResponse] = useState(false)
-  const { speak } = useSpeechOutput(setError)
+  const { push, finish, cancel: cancelSpeech } = useSpeechOutput(setError)
   const assistantStreamRef = useRef("")
+  const holdTimerRef = useRef<number | null>(null)
+  const captureStartedRef = useRef(false)
+  const suppressClickRef = useRef(false)
 
   useEffect(() => {
     let disposed = false
@@ -61,23 +64,29 @@ export default function HudApp() {
     (event: Event) => {
       if (event.type === "model.delta") {
         if ((event.payload as { source?: string }).source !== "voice") return
-        assistantStreamRef.current +=
-          (event.payload as { delta?: string }).delta ?? ""
+        const delta = (event.payload as { delta?: string }).delta ?? ""
+        assistantStreamRef.current += delta
+        push(delta)
         setAssistantStream(assistantStreamRef.current)
       } else if (event.type === "model.completed") {
         if ((event.payload as { source?: string }).source !== "voice") return
         setAwaitingResponse(false)
         const text = (event.payload as { text?: string }).text
-        if (text) speak(text)
+        finish()
         setAssistantStream(text || assistantStreamRef.current)
         assistantStreamRef.current = ""
+      } else if (event.type === "permission.requested") {
+        if ((event.payload as { source?: string }).source !== "voice") return
+        setAwaitingResponse(false)
+        finish()
+        setAssistantStream("Cloud approval is waiting in the dashboard.")
       } else if (event.type === "task.failed") {
         setAwaitingResponse(false)
         assistantStreamRef.current = ""
         setAssistantStream("")
       }
     },
-    [speak]
+    [finish, push]
   )
   useFlowStateEvents(handleLiveEvent)
 
@@ -98,6 +107,43 @@ export default function HudApp() {
   async function openDashboard() {
     await invoke("focus_main_window", { conversationId })
   }
+  const beginHold = useCallback(() => {
+    if (!conversationId || holdTimerRef.current !== null) return
+    suppressClickRef.current = false
+    holdTimerRef.current = window.setTimeout(() => {
+      holdTimerRef.current = null
+      captureStartedRef.current = true
+      suppressClickRef.current = true
+      setError(null)
+      setAssistantStream("")
+      assistantStreamRef.current = ""
+      cancelSpeech()
+      void invoke("start_voice_capture", { conversationId })
+        .then(() => setAwaitingResponse(true))
+        .catch((reason) => {
+          captureStartedRef.current = false
+          setAwaitingResponse(false)
+          setError(String(reason))
+        })
+    }, 180)
+  }, [cancelSpeech, conversationId])
+
+  const endHold = useCallback((cancel = false) => {
+    if (holdTimerRef.current !== null) {
+      window.clearTimeout(holdTimerRef.current)
+      holdTimerRef.current = null
+      return
+    }
+    if (!captureStartedRef.current) return
+    captureStartedRef.current = false
+    suppressClickRef.current = true
+    void invoke(cancel ? "cancel_voice_capture" : "stop_voice_capture").catch(
+      (reason) => {
+        setAwaitingResponse(false)
+        setError(String(reason))
+      }
+    )
+  }, [])
   const hideWidget = useCallback(async () => {
     await invoke("hide_hud")
   }, [])
@@ -142,8 +188,20 @@ export default function HudApp() {
         <button
           type="button"
           className="flow-orb"
-          onClick={() => void openDashboard()}
-          aria-label="Open FlowState dashboard"
+          onPointerDown={(event) => {
+            event.currentTarget.setPointerCapture(event.pointerId)
+            beginHold()
+          }}
+          onPointerUp={() => endHold(false)}
+          onPointerCancel={() => endHold(true)}
+          onClick={() => {
+            if (suppressClickRef.current) {
+              suppressClickRef.current = false
+              return
+            }
+            void openDashboard()
+          }}
+          aria-label="Hold to talk. Tap to open FlowState dashboard."
         >
           <span />
         </button>
