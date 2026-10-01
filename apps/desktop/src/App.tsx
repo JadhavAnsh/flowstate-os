@@ -168,7 +168,7 @@ function DashboardApp({
       ) {
         const payload = event.payload as { text?: string; source?: string }
         if (event.type === "model.completed" && payload.source !== "voice")
-          finish()
+          finish(payload.text)
         streamingRef.current = ""
         setStreaming("")
         setVoicePartial("")

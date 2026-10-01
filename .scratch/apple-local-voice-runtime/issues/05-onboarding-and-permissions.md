@@ -1,8 +1,7 @@
 # 05: Asset readiness and cloud approval UI
 
-**Status:** ready-for-agent
+**Status:** done
 
 Expose runtime readiness, install the preferred speech locale asset during setup, and resolve cloud escalation from an explicit dashboard approval surface.
 
 **Blocked by:** 01, 02
-

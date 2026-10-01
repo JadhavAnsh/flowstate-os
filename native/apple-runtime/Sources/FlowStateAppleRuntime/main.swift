@@ -219,28 +219,34 @@ private final class CaptureSession: @unchecked Sendable {
         let resultTask = Task<String, Error> {
             var finalized = ""
             var latestVolatile = ""
-            for try await result in module.results {
-                try Task.checkCancellation()
-                let segment = String(result.text.characters)
-                if result.isFinal {
-                    appendSegment(segment, to: &finalized)
-                    latestVolatile = ""
-                } else {
-                    latestVolatile = segment.trimmingCharacters(in: .whitespacesAndNewlines)
+            var latestDisplay = ""
+            do {
+                for try await result in module.results {
+                    try Task.checkCancellation()
+                    let segment = String(result.text.characters)
+                    if result.isFinal {
+                        appendSegment(segment, to: &finalized)
+                        latestVolatile = ""
+                    } else {
+                        latestVolatile = segment.trimmingCharacters(in: .whitespacesAndNewlines)
+                    }
+                    var display = finalized
+                    appendSegment(latestVolatile, to: &display)
+                    latestDisplay = display
+                    await writer.send(
+                        id: id,
+                        event: "transcript",
+                        payload: [
+                            "text": .string(display),
+                            "isFinal": .bool(false),
+                            "segmentFinal": .bool(result.isFinal),
+                        ]
+                    )
                 }
-                var display = finalized
-                appendSegment(latestVolatile, to: &display)
-                await writer.send(
-                    id: id,
-                    event: "transcript",
-                    payload: [
-                        "text": .string(display),
-                        "isFinal": .bool(false),
-                        "segmentFinal": .bool(result.isFinal),
-                    ]
-                )
+            } catch is CancellationError {
+                // Preserve the last useful volatile text when ending promptly.
             }
-            return finalized
+            return latestDisplay
         }
 
         let analysisTask = Task<Void, Error> {
@@ -292,8 +298,12 @@ private final class CaptureSession: @unchecked Sendable {
         engine.stop()
         engine.inputNode.removeTap(onBus: 0)
         inputContinuation.finish()
-        try await analyzer.finalizeAndFinishThroughEndOfInput()
-        try await analysisTask.value
+        // Finalize only audio already consumed, then close the result streams.
+        // `finalizeAndFinishThroughEndOfInput` can wait indefinitely when a live
+        // AVAudioEngine stream is stopped between converter buffers.
+        try await analyzer.finalize(through: nil)
+        await analyzer.cancelAndFinishNow()
+        _ = try? await analysisTask.value
         let transcript = try await resultTask.value
         await writer.send(
             id: id,
@@ -338,23 +348,65 @@ private struct RouteAssessment {
 @MainActor
 private final class NativeSpeechOutput: NSObject, AVSpeechSynthesizerDelegate {
     private let synthesizer = AVSpeechSynthesizer()
+    private let writer: OutputWriter
+    private var requests: [ObjectIdentifier: String] = [:]
 
-    override init() {
+    init(writer: OutputWriter) {
+        self.writer = writer
         super.init()
         synthesizer.delegate = self
     }
 
-    func speak(_ text: String, locale: String?) {
-        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+    func speak(_ text: String, locale: String?, id: String) {
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            Task { await writer.send(id: id, event: "result") }
+            return
+        }
         let utterance = AVSpeechUtterance(string: text)
         if let locale, let voice = AVSpeechSynthesisVoice(language: locale) {
             utterance.voice = voice
         }
+        requests[ObjectIdentifier(utterance)] = id
         synthesizer.speak(utterance)
     }
 
     func cancel() {
-        synthesizer.stopSpeaking(at: .immediate)
+        guard synthesizer.stopSpeaking(at: .immediate) else { return }
+        // macOS can deliver didFinish rather than didCancel after an immediate
+        // stop. Report the explicit interruption for all queued utterances.
+        let interrupted = Array(requests.values)
+        requests.removeAll()
+        Task {
+            for id in interrupted {
+                await writer.send(id: id, event: "speech_cancelled")
+                await writer.send(id: id, event: "result")
+            }
+        }
+    }
+
+    nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didStart utterance: AVSpeechUtterance) {
+        let key = ObjectIdentifier(utterance)
+        Task { @MainActor in report("speech_started", key: key) }
+    }
+
+    nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
+        let key = ObjectIdentifier(utterance)
+        Task { @MainActor in report("speech_finished", key: key, terminal: true) }
+    }
+
+    nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
+        let key = ObjectIdentifier(utterance)
+        Task { @MainActor in report("speech_cancelled", key: key, terminal: true) }
+    }
+
+    private func report(_ event: String, key: ObjectIdentifier, terminal: Bool = false) {
+        guard let id = requests[key] else { return }
+        if terminal { requests.removeValue(forKey: key) }
+        Task {
+            await writer.send(id: id, event: event)
+            // The IPC response is the playback barrier used by the widget.
+            if terminal { await writer.send(id: id, event: "result") }
+        }
     }
 }
 
@@ -372,7 +424,7 @@ private actor AppleRuntime {
         self.speechOutput = speechOutput
     }
 
-    func handle(_ command: CommandEnvelope) {
+    func handle(_ command: CommandEnvelope) async {
         switch command.command {
         case "status":
             Task { await sendStatus(id: command.id, localeIdentifier: command.locale) }
@@ -394,11 +446,10 @@ private actor AppleRuntime {
         case "speak":
             let text = command.text ?? ""
             let locale = command.locale
-            Task { @MainActor in speechOutput.speak(text, locale: locale) }
-            Task { await writer.send(id: command.id, event: "result") }
+            await speechOutput.speak(text, locale: locale, id: command.id)
         case "cancel_speech":
-            Task { @MainActor in speechOutput.cancel() }
-            Task { await writer.send(id: command.id, event: "result") }
+            await speechOutput.cancel()
+            await writer.send(id: command.id, event: "result")
         case "release_idle_resources":
             releaseIdleSessions(force: true)
             Task {
@@ -655,23 +706,29 @@ private actor AppleRuntime {
 private struct FlowStateAppleRuntimeMain {
     static func main() async {
         let writer = OutputWriter()
-        let speechOutput = await MainActor.run { NativeSpeechOutput() }
+        let speechOutput = await MainActor.run { NativeSpeechOutput(writer: writer) }
         let runtime = AppleRuntime(writer: writer, speechOutput: speechOutput)
         let decoder = JSONDecoder()
 
-        while let line = readLine() {
-            guard let data = line.data(using: .utf8) else { continue }
-            do {
-                let command = try decoder.decode(CommandEnvelope.self, from: data)
-                await runtime.handle(command)
-            } catch {
-                await writer.send(
-                    id: "invalid",
-                    event: "error",
-                    code: "invalid_json",
-                    message: error.localizedDescription
-                )
+        do {
+            // Suspending here is essential: blocking readLine() starves the
+            // main actor used by capture startup and AVSpeechSynthesizer.
+            for try await line in FileHandle.standardInput.bytes.lines {
+                guard let data = line.data(using: .utf8) else { continue }
+                do {
+                    let command = try decoder.decode(CommandEnvelope.self, from: data)
+                    await runtime.handle(command)
+                } catch {
+                    await writer.send(
+                        id: "invalid",
+                        event: "error",
+                        code: "invalid_json",
+                        message: error.localizedDescription
+                    )
+                }
             }
+        } catch {
+            FileHandle.standardError.write(Data("Apple runtime input closed: \(error.localizedDescription)\n".utf8))
         }
     }
 }

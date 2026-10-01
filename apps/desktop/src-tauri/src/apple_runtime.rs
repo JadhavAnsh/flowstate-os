@@ -397,7 +397,8 @@ impl AppleRuntime {
         self.request(
             "speak",
             json!({ "text": text, "locale": "en-IN" }),
-            Duration::from_secs(10),
+            // The sidecar replies after playback, not when speech is queued.
+            Duration::from_secs(120),
         )
         .await
         .map(|_| ())

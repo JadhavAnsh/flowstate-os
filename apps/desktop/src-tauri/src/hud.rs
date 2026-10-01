@@ -58,6 +58,19 @@ struct Activation {
 }
 
 impl Activation {
+    fn ptt_event(&mut self, action: &ShortcutAction) -> Option<bool> {
+        if action.ptt_started {
+            self.pinned = true;
+            Some(true)
+        } else if action.ptt_stopped {
+            // Releasing the chord begins transcription finalization and the
+            // response. Only the frontend's completed turn may clear this pin.
+            Some(false)
+        } else {
+            None
+        }
+    }
+
     fn should_conceal(&mut self, now: Instant, inside: bool) -> bool {
         if !self.revealed || inside || self.pinned || self.busy {
             self.left_at = None;
@@ -179,16 +192,32 @@ struct Shortcut {
     chord_down: bool,
     last_command: Option<Instant>,
 }
+
+#[derive(Default)]
+struct ShortcutAction {
+    reveal: bool,
+    ptt_started: bool,
+    ptt_stopped: bool,
+}
+
 impl Shortcut {
-    fn update(&mut self, now: Instant, command: bool, control: bool, option: bool) -> bool {
+    fn update(
+        &mut self,
+        now: Instant,
+        command: bool,
+        control: bool,
+        option: bool,
+    ) -> ShortcutAction {
         let chord = control && option;
-        let mut activate = chord && !self.chord_down;
+        let chord_started = chord && !self.chord_down;
+        let chord_stopped = !chord && self.chord_down;
+        let mut reveal = chord_started;
         if command && !self.command_down && !control && !option {
             if self
                 .last_command
                 .is_some_and(|last| now.duration_since(last) <= Duration::from_millis(450))
             {
-                activate = true;
+                reveal = true;
                 self.last_command = None;
             } else {
                 self.last_command = Some(now);
@@ -199,7 +228,11 @@ impl Shortcut {
         }
         self.command_down = command;
         self.chord_down = chord;
-        activate
+        ShortcutAction {
+            reveal,
+            ptt_started: chord_started,
+            ptt_stopped: chord_stopped,
+        }
     }
 }
 
@@ -234,24 +267,26 @@ pub fn start(app: &AppHandle) {
                 }
                 refreshed = now;
             }
-            #[cfg(target_os = "macos")]
-            let triggered = {
-                use objc2_app_kit::{NSEvent, NSEventModifierFlags as Flags};
-                let flags = NSEvent::modifierFlags_class();
-                shortcut.update(
-                    now,
-                    flags.contains(Flags::Command),
-                    flags.contains(Flags::Control),
-                    flags.contains(Flags::Option),
-                )
-            };
-            #[cfg(not(target_os = "macos"))]
-            let triggered = shortcut.update(now, false, false, false);
-
             if let (Ok(cursor), Ok(mut activation)) =
                 (app.cursor_position(), state.activation.lock())
             {
                 if activation.ready {
+                    // Do not consume a held chord before the HUD has installed
+                    // its reveal, push-to-talk, and live-event listeners.
+                    #[cfg(target_os = "macos")]
+                    let shortcut_action = {
+                        use objc2_app_kit::{NSEvent, NSEventModifierFlags as Flags};
+                        let flags = NSEvent::modifierFlags_class();
+                        shortcut.update(
+                            now,
+                            flags.contains(Flags::Command),
+                            flags.contains(Flags::Control),
+                            flags.contains(Flags::Option),
+                        )
+                    };
+                    #[cfg(not(target_os = "macos"))]
+                    let shortcut_action = shortcut.update(now, false, false, false);
+
                     let hot = monitors
                         .iter()
                         .map(Bounds::from)
@@ -265,7 +300,7 @@ pub fn start(app: &AppHandle) {
                     if !inside && hot.is_none() {
                         activation.suppressed = false;
                     }
-                    if triggered {
+                    if shortcut_action.reveal {
                         if let Ok(Some(monitor)) = app.monitor_from_point(cursor.x, cursor.y) {
                             if let Err(error) =
                                 reveal(&app, &mut activation, Bounds::from(&monitor), true)
@@ -279,6 +314,9 @@ pub fn start(app: &AppHandle) {
                                 eprintln!("HUD activation: {error}");
                             }
                         }
+                    }
+                    if let Some(pressed) = activation.ptt_event(&shortcut_action) {
+                        let _ = app.emit("hud-ptt", pressed);
                     }
                     if activation.should_conceal(now, inside) {
                         if let Err(error) = conceal(&app, &mut activation) {
@@ -362,15 +400,44 @@ mod tests {
     fn shortcuts_trigger_once_per_chord_or_double_tap() {
         let mut shortcut = Shortcut::default();
         let now = Instant::now();
-        assert!(!shortcut.update(now, false, true, false));
-        assert!(shortcut.update(now, false, true, true));
-        assert!(!shortcut.update(now, false, true, true));
-        assert!(!shortcut.update(now, false, false, false));
-        assert!(!shortcut.update(now, true, false, false));
-        assert!(!shortcut.update(now, true, false, false));
-        assert!(!shortcut.update(now, false, false, false));
-        assert!(shortcut.update(now + Duration::from_millis(200), true, false, false));
-        assert!(!shortcut.update(now, false, false, false));
-        assert!(!shortcut.update(now + Duration::from_secs(1), true, false, false));
+        let partial = shortcut.update(now, false, true, false);
+        assert!(!partial.reveal && !partial.ptt_started && !partial.ptt_stopped);
+        let started = shortcut.update(now, false, true, true);
+        assert!(started.reveal && started.ptt_started && !started.ptt_stopped);
+        let held = shortcut.update(now, false, true, true);
+        assert!(!held.reveal && !held.ptt_started && !held.ptt_stopped);
+        let stopped = shortcut.update(now, false, false, false);
+        assert!(!stopped.reveal && !stopped.ptt_started && stopped.ptt_stopped);
+        assert!(!shortcut.update(now, true, false, false).reveal);
+        assert!(!shortcut.update(now, true, false, false).reveal);
+        assert!(!shortcut.update(now, false, false, false).reveal);
+        assert!(
+            shortcut
+                .update(now + Duration::from_millis(200), true, false, false)
+                .reveal
+        );
+        assert!(!shortcut.update(now, false, false, false).reveal);
+        assert!(
+            !shortcut
+                .update(now + Duration::from_secs(1), true, false, false)
+                .reveal
+        );
+    }
+
+    #[test]
+    fn releasing_push_to_talk_keeps_widget_visible_until_explicit_collapse() {
+        let now = Instant::now();
+        let mut state = Activation {
+            revealed: true,
+            ..Default::default()
+        };
+        let mut shortcut = Shortcut::default();
+        let started = shortcut.update(now, false, true, true);
+        assert_eq!(state.ptt_event(&started), Some(true));
+        let stopped = shortcut.update(now, false, false, false);
+        assert_eq!(state.ptt_event(&stopped), Some(false));
+        assert!(!state.should_conceal(now, false));
+        assert!(!state.should_conceal(now + Duration::from_secs(10), false));
+        assert!(state.pinned);
     }
 }
